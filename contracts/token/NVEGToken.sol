@@ -103,4 +103,13 @@ contract NVEGToken is ERC20BurnPausable, AccessController, ReentrancyGuard {
     function getBalanceTimelock(uint256 _lockId) public view returns(uint256) {
         return ITimelock(timelockContract).getTokenBalanceByAddress(address(this), _lockId);
     }
+
+    // The following functions are overrides required by Solidity.
+    function _beforeTokenTransfer(
+        address sender,
+        address receiver,
+        uint256 amount
+    ) internal override(ERC20BurnPausable) {
+        super._beforeTokenTransfer(sender, receiver, amount);
+    }
 }
