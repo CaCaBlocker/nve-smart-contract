@@ -9,13 +9,13 @@ contract Timelock is ReentrancyGuard {
     using SafeMath for uint256;
 
     /// @notice GLOBAL CONSTANTS
-    uint256 public depositId;
-    uint256[] public allDepositIds;
+    uint256 private depositId;
+    uint256[] private allDepositIds;
     uint public constant MINIMUM_DELAY = 7;
     uint public constant MAXIMUM_DELAY = 30;
 
-    mapping(uint256 => Items) public lockedToken;
-    mapping(address => mapping(uint256 => uint256)) public walletTokenBalance;
+    mapping(uint256 => Items) private lockedToken;
+    mapping(address => mapping(uint256 => uint256)) private walletTokenBalance;
 
     /// @notice EVENTS
     event Deposit(address indexed tokenAddress, address indexed sender, uint256 amount, uint256 unlockTime, uint256 depositId);
