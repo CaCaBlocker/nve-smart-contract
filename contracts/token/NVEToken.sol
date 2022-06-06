@@ -12,9 +12,9 @@ contract NVEToken is ERC20BurnPausable, ReentrancyGuard {
 
   address public daoContract;
   address public timelockContract;
-  uint256 public initializeTokenAmount = 17000000 * 10**9; //17M token, Decimals = 9
+  uint256 private initializeTokenAmount = 17000000 * 10**9; //17M token, Decimals = 9
   uint256 private _lastUnlockedTime;
-  uint32 public constant minimumTimeBetweenUnlocks = 30 days;
+  uint32 private constant minimumTimeBetweenUnlocks = 30 days;
 
   constructor(
     address _daoContract,
