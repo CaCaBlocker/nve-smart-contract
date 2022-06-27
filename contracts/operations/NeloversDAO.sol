@@ -2,26 +2,31 @@
 pragma solidity >=0.8.0;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "../interfaces/INVEG.sol";
 
-contract NeloverseDAO {
+contract NeloverseDAO is ReentrancyGuard {
     /// @notice GLOBAL CONSTANTS
-    uint256 public summoningTime; /// @notice time DAO contract deployed.
+    uint public constant MINIMUM_ACCEPTANCE_THRESHOLD = 1000; /// @notice The minimum acceptance threshold.
+    uint public constant MINIMUM_PROPOSAL_DAYS = 3; /// @notice The minimum proposal period.
     address public nvegContract; /// @notice NVEG contract address.
 
     /// @notice INTERNAL ACCOUNTING
     uint256 private proposalCount = 1; /// @notice total proposals submitted.
+    uint256 private memberCount = 1; /// @notice total member.
     uint256[] private proposalQueue;
-    uint256[] private governanceProposalQueue;
 
     mapping (uint256 => Proposal) private proposals;
-    mapping (uint256 => GovernanceProposal) private governanceProposals;
-    mapping (address => Member) private members;
+    mapping(uint256 => mapping(address => Member)) private oldMembers;
+    mapping(address => Member) private members;
 
     /// @notice EVENTS
-    event SubmitProposal(address proposer, uint256 acceptanceThreshold, uint256 _days, string details, bool[4] flags, uint256 proposalId);
+    event SubmitProposal(address proposer, uint256 acceptanceThreshold, uint256 _days, string details, bool[4] flags, uint256 proposalId, uint256 proposalType);
     event SubmitVote(uint256 indexed proposalIndex, address indexed memberAddress, uint8 uintVote);
     event CancelProposal(uint256 indexed proposalId, address applicantAddress);
     event ProcessedProposal(address proposer, uint256 acceptanceThreshold, uint256 _days, string details, bool[4] flags, uint256 proposalId);
+    event AddMember(uint256 shares, uint256 memberId, address memberAddress);
+    event Withdraw(address memberAddress, uint256 shares);
 
     /// @notice Vote types of the proposal.
     enum Vote {
@@ -36,8 +41,7 @@ contract NeloverseDAO {
         Canceled,
         Finished,
         Passed,
-        Rejected,
-        Enacted
+        Rejected
     }
 
     /// @notice Possible types of the proposal.
@@ -49,10 +53,12 @@ contract NeloverseDAO {
     /// @notice Struct of member.
     struct Member {
         uint256 shares; // the # of voting shares assigned to this member.
-        bool exists; // always true once a member has been created.
+        uint256[] votedProposal; // the total proposals which you voted.
+        mapping(uint256 => uint256) votedScore; // the score which you voted for each proposal.
+        bool exists; // the flag to checking you a member or not.
     }
 
-    /// @notice Struct of common proposal
+    /// @notice Struct of proposal
     struct Proposal {
         address proposer; /// @notice the account that submitted the proposal (can be non-member).
         uint256 startingTime; /// @notice the time in which voting can start for this proposal.
@@ -60,165 +66,151 @@ contract NeloverseDAO {
         uint256 yesVotes; /// @notice the total number of YES votes for this proposal.
         uint256 noVotes; /// @notice the total number of NO votes for this proposal.
         uint256 acceptanceThreshold; /// @notice the total points you need to pass for this proposal.
-        uint256 votingScore; /// @notice the total voting points for this proposal.
+        uint256 votingYesScore; /// @notice the total yes voting points for this proposal.
+        uint256 votingNoScore; /// @notice the total no voting points for this proposal.
         bool[4] flags; /// @notice [sponsored, processed, didPass, cancelled].
         string details; /// @notice proposal details - could be IPFS hash, plaintext, or JSON.
         mapping(address => Vote) votesByMember; /// @notice the votes on this proposal by each member.
         bool exists; /// @notice always true once a proposal has been created.
         bool enacted; /// @notice always false once a proposal has been created.
         uint256 proposalType; /// @notice type of proposal.
-    }
-
-    /// @notice Struct of governance proposal
-    struct GovernanceProposal {
-        address proposer; /// @notice the account that submitted the proposal (can be non-member).
-        uint256 startingTime; /// @notice the time in which voting can start for this proposal.
-        uint256 endingTime; /// @notice the time in which voting can end for this proposal.
-        uint256 yesVotes; /// @notice the total number of YES votes for this proposal.
-        uint256 noVotes; /// @notice the total number of NO votes for this proposal.
-        uint256 acceptanceThreshold; /// @notice the total points you need to pass for this proposal.
-        uint256 votingScore; /// @notice the total voting points for this proposal.
-        bool[4] flags; /// @notice [sponsored, processed, didPass, cancelled].
-        string details; /// @notice proposal details - could be IPFS hash, plaintext, or JSON.
-        mapping(address => Vote) votesByMember; /// @notice the votes on this proposal by each member.
-        bool exists; /// @notice always true once a proposal has been created.
-        bool enacted; /// @notice always false once a proposal has been created.
-        uint256 proposalType; /// @notice type of proposal.
-        address targetAddress; /// @notice address of target Governance smart contract.
+        address targetAddress; /// @notice address of target smart contract just need for Governance.
     }
 
     // CONSTRUCTOR
     constructor(address _nvegContract) {
-        summoningTime = block.timestamp;
         nvegContract = _nvegContract;
     }
 
-    modifier onlyValid(uint256 proposalId, uint256 _proposalType) {
+    modifier onlyValid(uint256 proposalId) {
         require(proposalCount >= proposalId && proposalId > 0, "NeloverseDAO: Invalid proposal id.");
-        require(_proposalType < 2, "NeloverseDAO: Proposal type must be less than 2.");
+        _;
+    }
+
+    modifier onlyMember() {
+        require(members[msg.sender].exists, "NeloverseDAO: You are not a member.");
+        require(members[msg.sender].shares > 0, "NeloverseDAO: You are not a member.");
+        _;
+    }
+
+    modifier isHaveEnoughNVEG(uint256 _amount) {
+        require(IERC20(nvegContract).balanceOf(msg.sender) > 0 && _amount <= IERC20(nvegContract).balanceOf(msg.sender), "NeloverseDAO: You don't have NVEG.");
+        require(INVEG(nvegContract).approveFrom(msg.sender, address(this), _amount), "NeloverseDAO: Falied to approve.");
+        require(IERC20(nvegContract).transferFrom(msg.sender, address(this), _amount), "NeloverseDAO: Falied to transfer token.");
+        _;
+    }
+
+    modifier isValidThresholdAndDays(uint256 acceptanceThreshold, uint256 _days) {
+        require(acceptanceThreshold >= MINIMUM_ACCEPTANCE_THRESHOLD, "NeloverseDAO: Acceptance Threshold must be at greater than 1000");
+        require(_days >= MINIMUM_PROPOSAL_DAYS, "NeloverseDAO: Proposal days must be at least 3 days.");
         _;
     }
 
     /// @notice PUBLIC FUNCTIONS
-    /// @notice SUBMIT COMMON PROPOSAL
+    /// @notice SUBMIT PROPOSAL
     /// @notice Set applicant, timelimit, details, proposal types.
-    function submitProposal(uint256 acceptanceThreshold, uint256 _days, string memory details, uint8 _proposalType) external returns (uint256 proposalId) {
-        address applicant = msg.sender;
-        require(applicant != address(0), "NeloverseDAO: Applicant cannot be 0");
+    function submitProposal(uint256 acceptanceThreshold, uint256 _days, string memory details, uint8 _proposalType, address _targetAddress) external isValidThresholdAndDays(acceptanceThreshold, _days) returns (uint256 proposalId) {
+        require(msg.sender != address(0), "NeloverseDAO: Applicant cannot be 0.");
         require(_proposalType < 2, "NeloverseDAO: Proposal Type must be less than 2.");
         bool[4] memory flags; /// @notice [sponsored, processed, didPass, cancelled]
-        _submitProposal(acceptanceThreshold, _days, details, flags, _proposalType);
+        if (_proposalType == 1) {
+            require(_targetAddress != address(0), "NeloverseDAO: Target Address cannot be 0.");
+        }
 
-        return proposalCount; /// @notice return proposalId - contracts calling submit might want it
-    }
-
-    /// @notice SUBMIT GOVERNANCE PROPOSAL
-    /// @notice Set applicant, timelimit, details, proposal types, target address.
-    function submitGovernanceProposal(uint256 acceptanceThreshold, uint256 _days, string memory details, uint8 _proposalType, address _targetAddress) external returns (uint256 proposalId) {
-        address applicant = msg.sender;
-        require(applicant != address(0), "NeloverseDAO: Applicant cannot be 0");
-        require(_proposalType < 2, "NeloverseDAO: Proposal Type must be less than 2.");
-        require(IERC20(nvegContract).balanceOf(msg.sender) > 100, "NeloverseDAO: You need to at least 100 VP to submit Governance Proposal.");
-        bool[4] memory flags; /// @notice [sponsored, processed, didPass, cancelled]
-        _submitGovernanceProposal(acceptanceThreshold, _days, details, flags, _proposalType, _targetAddress);
-
+        _submitProposal(acceptanceThreshold, _days, details, flags, _proposalType, _targetAddress);
         return proposalCount; /// @notice return proposalId - contracts calling submit might want it
     }
 
     /// @notice Function which can be called when the proposal voting time has expired. To either act on the proposal or cancel if not a majority yes vote.
-    function processProposal(uint256 proposalId, uint256 _proposalType) external onlyValid(proposalId, _proposalType) returns (bool) {
-        bool processing;
-        if (_proposalType == 0) {
-            require(proposals[proposalId].exists, "NeloverseDAO: This proposal does not exist.");
-            require(proposals[proposalId].flags[1] == false, "NeloverseDAO: This proposal has already been processed.");
-            require(getCurrentTime() >= proposals[proposalId].startingTime, "NeloverseDAO: Voting period has not started.");
-            require(hasVotingPeriodExpired(proposals[proposalId].startingTime, proposals[proposalId].endingTime), "NeloverseDAO: Proposal voting period has not expired yet.");
-
-            for (uint256 i = 0; i < proposalQueue.length; i++) {
-                if (proposalQueue[i] == proposalId) {
-                    delete proposalQueue[i];
-                }
+    function processProposal(uint256 proposalId) external onlyValid(proposalId) returns (bool) {
+        require(proposals[proposalId].exists, "NeloverseDAO: This proposal does not exist.");
+        require(proposals[proposalId].flags[1] == false, "NeloverseDAO: This proposal has already been processed.");
+        require(getCurrentTime() >= proposals[proposalId].startingTime, "NeloverseDAO: Voting period has not started.");
+        require(hasVotingPeriodExpired(proposals[proposalId].startingTime, proposals[proposalId].endingTime), "NeloverseDAO: Proposal voting period has not expired yet.");
+        for (uint256 i = 0; i < proposalQueue.length; i++) {
+            if (proposalQueue[i] == proposalId) {
+                delete proposalQueue[i];
             }
-
-            Proposal storage prop = proposals[proposalId];
-
-            if (prop.flags[3] == false) {
-                if (prop.yesVotes > prop.noVotes && prop.votingScore > prop.acceptanceThreshold) {
-                    prop.flags[1] = true;
-                    prop.flags[2] = true;
-                    processing = true;
-                } else {
-                    prop.flags[1] = true;
-                    _cancelProposal(proposalId);
-                    processing = false;
-                }
-            }
-            emit ProcessedProposal(prop.proposer, prop.acceptanceThreshold, prop.endingTime, prop.details, prop.flags, proposalId);
-        } else {
-            require(governanceProposals[proposalId].exists, "NeloverseDAO: This proposal does not exist.");
-            require(governanceProposals[proposalId].flags[1] == false, "NeloverseDAO: This proposal has already been processed.");
-            require(getCurrentTime() >= governanceProposals[proposalId].startingTime, "NeloverseDAO: Voting period has not started.");
-            require(hasVotingPeriodExpired(governanceProposals[proposalId].startingTime, governanceProposals[proposalId].endingTime), "NeloverseDAO: Proposal voting period has not expired yet.");
-
-            for (uint256 i = 0; i < governanceProposalQueue.length; i++) {
-                if (governanceProposalQueue[i] == proposalId) {
-                    delete governanceProposalQueue[i];
-                }
-            }
-
-            GovernanceProposal storage prop = governanceProposals[proposalId];
-
-            if (prop.flags[3] == false) {
-                if (prop.yesVotes > prop.noVotes && prop.votingScore > prop.acceptanceThreshold) {
-                    prop.flags[1] = true;
-                    prop.flags[2] = true;
-                    processing = true;
-                } else {
-                    prop.flags[1] = true;
-                    _cancelGovernanceProposal(proposalId);
-                    processing = false;
-                }
-            }
-            emit ProcessedProposal(prop.proposer, prop.acceptanceThreshold, prop.endingTime, prop.details, prop.flags, proposalId);
         }
+        Proposal storage prop = proposals[proposalId];
+        if (prop.flags[3] == false) {
+            if (prop.yesVotes > prop.noVotes && prop.votingYesScore >= prop.acceptanceThreshold) {
+                prop.flags[1] = true;
+                prop.flags[2] = true;
+            } else {
+                prop.flags[1] = true;
+                prop.flags[2] = false;
+            }
+        }
+        emit ProcessedProposal(prop.proposer, prop.acceptanceThreshold, prop.endingTime, prop.details, prop.flags, proposalId);
+        return true; 
+    }
 
-        return processing;
+    /// @notice Function which can be called when the proposal voting time has not expired.
+    function cancelProposal(uint256 proposalId) external onlyValid(proposalId) {
+        require(proposals[proposalId].exists, "NeloverseDAO: This proposal does not exist.");
+        require(proposals[proposalId].proposer == msg.sender, "NeloverseDAO: Only proposer can cancel.");
+        require(!proposals[proposalId].flags[3], "NeloverseDAO: Proposal has already been cancelled");
+        require(!hasVotingPeriodExpired(proposals[proposalId].startingTime, proposals[proposalId].endingTime), "NeloverseDAO: Cancel proposal just allow in happening time.");
+        _cancelProposal(proposalId);
     }
 
     /// @notice Function to submit a vote to a proposal.
     /// @notice Voting period must be in session
-    function submitVote(uint256 proposalId, uint8 uintVote, uint256 _proposalType) external onlyValid(proposalId, _proposalType) {
-        require(!members[msg.sender].exists, "NeloverseDAO: Member has already voted.");
-        require(IERC20(nvegContract).balanceOf(msg.sender) > 0, "NeloverseDAO: You don't have enough NVEG.");
+    function submitVote(uint256 proposalId, uint8 uintVote) external onlyMember onlyValid(proposalId) {
         require(uintVote < 3, "NeloverseDAO: Vote must be less than 3.");
 
-        if (_proposalType == 0) {
-            _submitVote(proposalId, uintVote);
-        } else {
-            _submitGovernanceVote(proposalId, uintVote);
-        }
+        _submitVote(proposalId, uintVote);
     }
 
     /// @notice Function to update the action status of proposal, it have been done or not.
-    function actionProposal(uint256 proposalId, uint256 _proposalType) external onlyValid(proposalId, _proposalType) {
-        if (_proposalType == 0) {
-            require(proposals[proposalId].exists, "NeloverseDAO: This proposal does not exist.");
-            Proposal storage prop = proposals[proposalId];
-            require(prop.flags[1] == true && prop.flags[2] == true, "NeloverseDAO: This proposal not approve.");
-            require(prop.enacted == false, "NeloverseDAO: This proposal already did.");
-            prop.enacted = true;
-        } else {
-            require(governanceProposals[proposalId].exists, "NeloverseDAO: This proposal does not exist.");
-            GovernanceProposal storage prop = governanceProposals[proposalId];
-            require(prop.flags[1] == true && prop.flags[2] == true, "NeloverseDAO: This proposal not approve.");
-            require(prop.enacted == false, "NeloverseDAO: This governance proposal already did.");
-            prop.enacted = true;
+    function actionProposal(uint256 proposalId) external onlyValid(proposalId) {
+        require(proposals[proposalId].exists, "NeloverseDAO: This proposal does not exist.");
+        require(proposals[proposalId].flags[1] == true && proposals[proposalId].flags[2] == true, "NeloverseDAO: This proposal not approve.");
+        require(proposals[proposalId].enacted == false, "NeloverseDAO: This proposal already did.");
+        proposals[proposalId].enacted = true;
+    }
+
+    /// @notice Register a member.
+    function addMember(uint256 _amount) external isHaveEnoughNVEG(_amount) returns(uint256 _memberId) {
+        require(!members[msg.sender].exists, "NeloverseDAO: You already a member.");
+        members[msg.sender].shares = weiToEther(_amount);
+        members[msg.sender].exists = true;
+        _memberId = memberCount;
+        emit AddMember(members[msg.sender].shares, _memberId, msg.sender);
+        memberCount += 1;
+        return _memberId;
+    }
+
+    /// @notice Getting more VP when you have more NVEG.
+    function getMoreVP(uint256 _amount) external nonReentrant onlyMember isHaveEnoughNVEG(_amount) {
+        members[msg.sender].shares += weiToEther(_amount);
+    }
+
+    /// @notice Withdraw NVEG.
+    function withdraw(uint256 _amount) external nonReentrant onlyMember {
+        Member storage member = members[msg.sender];
+        if (member.votedProposal.length > 0) {
+            for (uint256 i = 0; i < member.votedProposal.length; i++) {
+                Proposal storage proposal = proposals[member.votedProposal[i]];
+                if (proposal.flags[3] == false) {
+                    require(hasVotingPeriodExpired(proposal.startingTime, proposal.endingTime), "NeloverseDAO: Proposal you voted not expired.");
+                }
+            }
         }
+        require(_amount <= member.shares * 10**9, "NeloverseDAO: Your amount is over your balance.");
+        require(IERC20(nvegContract).balanceOf(address(this)) >= _amount, "NeloverseDAO: Don't have enough NVEG to withdraw.");
+        require(IERC20(nvegContract).transfer(msg.sender, _amount), "NeloverseDAO: Falied to transfer token.");
+        member.shares -= weiToEther(_amount);
+        if (member.shares <= 0) {
+            member.exists = false;
+        }
+        emit Withdraw(msg.sender, _amount);
     }
 
     /// @notice INTERNAL FUNCTION
-    /// @notice SUBMIT COMMON PROPOSAL
-    function _submitProposal(uint256 acceptanceThreshold, uint256 _days, string memory details, bool[4] memory flags, uint8 _proposalType) internal {
+    /// @notice SUBMIT PROPOSAL
+    function _submitProposal(uint256 acceptanceThreshold, uint256 _days, string memory details, bool[4] memory flags, uint8 _proposalType, address _targetAddress) internal {
         proposalQueue.push(proposalCount);
         Proposal storage prop = proposals[proposalCount];
         prop.proposer = msg.sender;
@@ -230,104 +222,63 @@ contract NeloverseDAO {
         prop.exists = true;
         prop.enacted = false;
         prop.proposalType = _proposalType;
-        emit SubmitProposal(msg.sender, acceptanceThreshold, _days, details, flags, proposalCount);
-        proposalCount += 1;
-    }
-
-    /// @notice SUBMIT GOVERNANCE PROPOSAL
-    function _submitGovernanceProposal(uint256 acceptanceThreshold, uint256 _days, string memory details, bool[4] memory flags, uint8 _proposalType, address _targetAddress) internal {
-        governanceProposalQueue.push(proposalCount);
-        GovernanceProposal storage prop = governanceProposals[proposalCount];
-        prop.proposer = msg.sender;
-        prop.startingTime = block.timestamp;
-        prop.endingTime = endDate(_days);
-        prop.flags = flags;
-        prop.details = details;
-        prop.acceptanceThreshold = acceptanceThreshold;
-        prop.exists = true;
-        prop.enacted = false;
-        prop.proposalType = _proposalType;
         prop.targetAddress = _targetAddress;
-        emit SubmitProposal(msg.sender, acceptanceThreshold, _days, details, flags, proposalCount);
+        emit SubmitProposal(msg.sender, acceptanceThreshold, _days, details, flags, proposalCount, _proposalType);
         proposalCount += 1;
     }
 
-    /// @notice Function cancel a common proposal if it has not been cancelled already.
+    /// @notice Function cancel proposal if it has not been cancelled already.
     function _cancelProposal(uint256 proposalId) internal {
-        Proposal storage proposal = proposals[proposalId];
-        require(proposal.proposer == msg.sender, "NeloverseDAO: Only proposer can cancelled proposal.");
-        require(!proposal.flags[3], "NeloverseDAO: Proposal has already been cancelled");
-        proposal.flags[3] = true; // cancelled
-
+        proposals[proposalId].flags[3] = true; // cancelled
         emit CancelProposal(proposalId, msg.sender);
     }
 
-    /// @notice Function cancel a governance proposal if it has not been cancelled already.
-    function _cancelGovernanceProposal(uint256 proposalId) internal {
-        GovernanceProposal storage proposal = governanceProposals[proposalId];
-        require(proposal.proposer == msg.sender, "NeloverseDAO: Only proposer can cancelled proposal.");
-        require(!proposal.flags[3], "NeloverseDAO: Proposal has already been cancelled");
-        proposal.flags[3] = true; // cancelled
-
-        emit CancelProposal(proposalId, msg.sender);
-    }
-
-    /// @notice submit vote for a common proposal.
+    /// @notice submit vote for proposal.
     function _submitVote(uint256 proposalId, uint8 uintVote) internal {
         require(proposals[proposalId].exists, "NeloverseDAO: This proposal does not exist.");
         Vote vote = Vote(uintVote);
-        address memberAddress = msg.sender;
-        uint256 accountBalance = IERC20(nvegContract).balanceOf(memberAddress);
         Proposal storage prop = proposals[proposalId];
-        Member storage member = members[memberAddress];
-        member.shares = weiToEther(accountBalance);
-        member.exists = true;
+        Member storage member = members[msg.sender];
+        require(proposals[proposalId].exists, "NeloverseDAO: This proposal does not exist.");
+
+        if (!contains(member.votedProposal, proposalId)) {
+            member.votedProposal.push(proposalId);
+            member.votedScore[proposalId] = member.shares;
+        }
 
         require(_state(proposalId) == ProposalState.Active, "NeloverseDAO: Proposal voting period has not started.");
         require(!hasVotingPeriodExpired(prop.startingTime, prop.endingTime), "NeloverseDAO: Proposal voting period has expired.");
-        require(prop.votesByMember[memberAddress] == Vote.Null, "NeloverseDAO: Member has already voted.");
         require(vote == Vote.Yes || vote == Vote.No, "NeloverseDAO: Vote must be either Yes or No.");
 
-        prop.votesByMember[memberAddress] = vote;
-
         if (vote == Vote.Yes) {
+            require(prop.votesByMember[msg.sender] != Vote.Yes, "NeloverseDAO: You already voted Yes.");
+            if (prop.votesByMember[msg.sender] == Vote.No) {
+                prop.noVotes -= 1;
+                prop.votingNoScore = prop.votingNoScore - member.votedScore[proposalId];
+            }
+
             prop.yesVotes += 1;
-            prop.votingScore = prop.votingScore + weiToEther(accountBalance);
+            prop.votingYesScore = prop.votingYesScore + member.votedScore[proposalId];
         } else if (vote == Vote.No) {
+            require(prop.votesByMember[msg.sender] != Vote.No, "NeloverseDAO: You already voted No.");
+            if (prop.votesByMember[msg.sender] == Vote.Yes) {
+                prop.yesVotes -= 1;
+                prop.votingYesScore = prop.votingYesScore - member.votedScore[proposalId];
+            }
+
             prop.noVotes += 1;
-            prop.votingScore = (prop.votingScore - weiToEther(accountBalance) < 0) ? 0 : prop.votingScore - weiToEther(accountBalance);
+            prop.votingNoScore = prop.votingNoScore + member.votedScore[proposalId];
         }
 
-        emit SubmitVote(proposalId, memberAddress, uintVote);
+        prop.votesByMember[msg.sender] = vote;
+        emit SubmitVote(proposalId, msg.sender, uintVote);
     }
 
-    /// @notice submit vote for a common proposal.
-    function _submitGovernanceVote(uint256 proposalId, uint8 uintVote) internal {
-        require(governanceProposals[proposalId].exists, "NeloverseDAO: This governance proposal does not exist.");
-        Vote vote = Vote(uintVote);
-        address memberAddress = msg.sender;
-        uint256 accountBalance = IERC20(nvegContract).balanceOf(memberAddress);
-        GovernanceProposal storage prop = governanceProposals[proposalId];
-        Member storage member = members[memberAddress];
-        member.shares = weiToEther(accountBalance);
-        member.exists = true;
-
-        require(_governanceState(proposalId) == ProposalState.Active, "NeloverseDAO: Governance Proposal voting period has not started.");
-        require(!hasVotingPeriodExpired(prop.startingTime, prop.endingTime), "NeloverseDAO: Governance Proposal voting period has expired.");
-        require(prop.votesByMember[memberAddress] == Vote.Null, "NeloverseDAO: Member has already voted.");
-        require(vote == Vote.Yes || vote == Vote.No, "NeloverseDAO: Vote must be either Yes or No.");
-
-        prop.votesByMember[memberAddress] = vote;
-
-        if (vote == Vote.Yes) {
-            prop.yesVotes += 1;
-            prop.votingScore = prop.votingScore + weiToEther(accountBalance);
-        } else if (vote == Vote.No) {
-            prop.noVotes += 1;
-            prop.votingScore = (prop.votingScore - weiToEther(accountBalance) < 0) ? 0 : prop.votingScore - weiToEther(accountBalance);
-        }
-
-        emit SubmitVote(proposalId, memberAddress, uintVote);
+    function getMemberProposalVote(uint256 proposalId) public view returns (Vote) {
+        require(proposalCount >= proposalId && proposalId > 0, "NeloverseDAO: Invalid proposal id.");
+        uint256 _proposalIndex = proposalId - 1;
+        require(_proposalIndex < proposalQueue.length, "NeloverseDAO: Proposal does not exist in Queue.");
+        return Vote(proposals[proposalQueue[_proposalIndex]].votesByMember[msg.sender]);
     }
 
     /// @notice GETTER FUNCTIONS
@@ -335,35 +286,23 @@ contract NeloverseDAO {
         return block.timestamp;
     }
 
-    function getProposalQueueLength(uint256 _proposalType) public view returns (uint256) {
-        require(_proposalType < 2, "NeloverseDAO: Proposal type must be less than 2.");
-
-        if (_proposalType == 0) {
-            return proposalQueue.length;
-        } else {
-            return governanceProposalQueue.length;
-        }
+    function getProposalQueueLength() public view returns (uint256) {
+        return proposalQueue.length;
     }
 
-    function getProposalFlags(uint256 proposalId, uint256 _proposalType) public onlyValid(proposalId, _proposalType) view returns (bool[4] memory) {
-        bool[4] memory flags;
-        if (_proposalType == 0) {
-            require(proposals[proposalId].exists, "NeloverseDAO: This proposal does not exist.");
-            flags = proposals[proposalId].flags;
-        } else {
-            require(governanceProposals[proposalId].exists, "NeloverseDAO: This governance proposal does not exist.");
-            flags = governanceProposals[proposalId].flags;
-        }
-
-        return flags;
+    function getMember() public view returns (uint256, uint256[] memory, bool) {
+        return (members[msg.sender].shares, members[msg.sender].votedProposal, members[msg.sender].exists);
     }
 
-    function getProposalState(uint256 proposalId, uint256 _proposalType) public onlyValid(proposalId, _proposalType) view returns (ProposalState) {
-        if (_proposalType == 0) {
-            return _state(proposalId);
-        } else {
-            return _governanceState(proposalId);
-        }
+    function getProposalFlags(uint256 proposalId) public onlyValid(proposalId) view returns (bool[4] memory _flags) {
+        require(proposals[proposalId].exists, "NeloverseDAO: This proposal does not exist.");
+        _flags = proposals[proposalId].flags;
+
+        return _flags;
+    }
+
+    function getProposalState(uint256 proposalId) public onlyValid(proposalId) view returns (ProposalState) {
+        return _state(proposalId);
     }
 
     function checkProposalId(uint256 proposalId) public view returns (bool) {
@@ -371,45 +310,26 @@ contract NeloverseDAO {
     }
 
     function getProposalTargetAddress(uint256 proposalId) public view returns (address) {
-        require(governanceProposals[proposalId].exists, "NeloverseDAO: This governance proposal does not exist.");
-        ProposalType proposalType = ProposalType(governanceProposals[proposalId].proposalType);
-        require(proposalType == ProposalType.Governance, "NeloverseDAO: This proposal not a Governance Proposal.");
-    
-        return governanceProposals[proposalId].targetAddress;
+        require(proposals[proposalId].exists, "NeloverseDAO: This proposal does not exist.");
+        require(ProposalType(proposals[proposalId].proposalType) == ProposalType.Governance, "NeloverseDAO: This proposal not a Governance Proposal.");
+
+        return proposals[proposalId].targetAddress;
     }
 
-    function getMemberProposalVote(address memberAddress, uint256 proposalIndex) public view returns (Vote) {
-        require(members[memberAddress].exists, "NeloverseDAO: Member does not exist.");
-        require(proposalIndex < proposalQueue.length, "NeloverseDAO: Proposal does not exist.");
-        return proposals[proposalQueue[proposalIndex]].votesByMember[memberAddress];
-    }
-
-    function getActionProposalStatus(uint256 proposalId, uint256 _proposalType) public onlyValid(proposalId, _proposalType) view returns (bool) {
-        bool enacted;
-        if (_proposalType == 0) {
-            require(proposals[proposalId].exists, "NeloverseDAO: This proposal does not exist.");
-            enacted = proposals[proposalId].enacted;
-        } else {
-            require(governanceProposals[proposalId].exists, "NeloverseDAO: This governance proposal does not exist.");
-            enacted = governanceProposals[proposalId].enacted;
-        }
+    function getActionProposalStatus(uint256 proposalId) public onlyValid(proposalId) view returns (bool) {
+        require(proposals[proposalId].exists, "NeloverseDAO: This proposal does not exist.");
+        bool enacted = proposals[proposalId].enacted;
 
         return enacted;
     }
 
-    function getProposalDetail(uint256 proposalId, uint256 _proposalType) public onlyValid(proposalId, _proposalType) view returns(uint256, uint256, uint256, uint256, uint256, uint256, string memory, bool, uint256) {
-        if (_proposalType == 0) {
-            require(proposals[proposalId].exists, "NeloverseDAO: This proposal does not exist.");
-            Proposal storage prop = proposals[proposalId];
-            return (prop.startingTime, prop.endingTime, prop.yesVotes, prop.noVotes, prop.acceptanceThreshold, prop.votingScore, prop.details, prop.enacted, prop.proposalType);
-        } else {
-            require(governanceProposals[proposalId].exists, "NeloverseDAO: This proposal does not exist.");
-            GovernanceProposal storage prop = governanceProposals[proposalId];
-            return (prop.startingTime, prop.endingTime, prop.yesVotes, prop.noVotes, prop.acceptanceThreshold, prop.votingScore, prop.details, prop.enacted, prop.proposalType);
-        }
+    function getProposalDetail(uint256 proposalId) public onlyValid(proposalId) view returns(uint256, uint256, uint256, uint256, uint256, uint256, uint256, string memory, bool, uint256) {
+        require(proposals[proposalId].exists, "NeloverseDAO: This proposal does not exist.");
+        Proposal storage prop = proposals[proposalId];
+        return (prop.startingTime, prop.endingTime, prop.yesVotes, prop.noVotes, prop.acceptanceThreshold, prop.votingYesScore, prop.votingNoScore, prop.details, prop.enacted, prop.proposalType);
     }
 
-    /// @notice HELPER FUNCTIONS
+    /// @notice INTERNAL HELPER FUNCTIONS
     function endDate(uint256 _days) internal view returns (uint256) {
         return block.timestamp + _days * 1 days;
     }
@@ -439,20 +359,13 @@ contract NeloverseDAO {
         }
     }
 
-    function _governanceState(uint256 proposalId) internal view returns (ProposalState _stateStatus) {
-        require(governanceProposals[proposalId].exists, "NeloverseDAO: This governance proposal does not exist.");
-        GovernanceProposal storage proposal = governanceProposals[proposalId];
-
-        if (!hasVotingPeriodExpired(proposal.startingTime, proposal.endingTime) && getCurrentTime() >= proposal.startingTime) {
-            _stateStatus = ProposalState.Active;
-        } else if (hasVotingPeriodExpired(proposal.startingTime, proposal.endingTime) && proposal.flags[3] == true) {
-            _stateStatus = ProposalState.Canceled;
-        } else if (hasVotingPeriodExpired(proposal.startingTime, proposal.endingTime) && proposal.flags[2] == true) {
-            _stateStatus = ProposalState.Passed;
-        } else if (hasVotingPeriodExpired(proposal.startingTime, proposal.endingTime) && proposal.flags[2] == false) {
-            _stateStatus = ProposalState.Rejected;
-        } else if (hasVotingPeriodExpired(proposal.startingTime, proposal.endingTime)) {
-            _stateStatus = ProposalState.Finished;
+    function contains(uint256[] memory _votedProposal, uint256 proposalId) internal pure returns (bool) {
+        bool isHave = false;
+        for (uint256 i = 0; i < _votedProposal.length; i++) {
+            if (_votedProposal[i] == proposalId) {
+                isHave = true;
+            }
         }
+        return isHave;
     }
 }
