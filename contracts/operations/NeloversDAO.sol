@@ -23,7 +23,6 @@ contract NeloverseDAO is ReentrancyGuard {
     /// @notice EVENTS
     event SubmitProposal(address proposer, uint256 acceptanceThreshold, uint256 _days, string details, bool[4] flags, uint256 proposalId, uint256 proposalType);
     event SubmitVote(uint256 indexed proposalIndex, address indexed memberAddress, uint8 uintVote);
-    event CancelProposal(uint256 indexed proposalId, address applicantAddress);
     event ProcessedProposal(address proposer, uint256 acceptanceThreshold, uint256 _days, string details, bool[4] flags, uint256 proposalId);
     event AddMember(uint256 shares, uint256 memberId, address memberAddress);
     event Withdraw(address memberAddress, uint256 shares);
@@ -38,10 +37,10 @@ contract NeloverseDAO is ReentrancyGuard {
     /// @notice Possible states that a proposal may be in.
     enum ProposalState {
         Active,
-        Canceled,
         Finished,
         Passed,
-        Rejected
+        Rejected,
+        Enacted
     }
 
     /// @notice Possible types of the proposal.
@@ -146,15 +145,6 @@ contract NeloverseDAO is ReentrancyGuard {
         return true; 
     }
 
-    /// @notice Function which can be called when the proposal voting time has not expired.
-    function cancelProposal(uint256 proposalId) external onlyValid(proposalId) {
-        require(proposals[proposalId].exists, "NeloverseDAO: This proposal does not exist.");
-        require(proposals[proposalId].proposer == msg.sender, "NeloverseDAO: Only proposer can cancel.");
-        require(!proposals[proposalId].flags[3], "NeloverseDAO: Proposal has already been cancelled");
-        require(!hasVotingPeriodExpired(proposals[proposalId].startingTime, proposals[proposalId].endingTime), "NeloverseDAO: Cancel proposal just allow in happening time.");
-        _cancelProposal(proposalId);
-    }
-
     /// @notice Function to submit a vote to a proposal.
     /// @notice Voting period must be in session
     function submitVote(uint256 proposalId, uint8 uintVote) external onlyMember onlyValid(proposalId) {
@@ -225,12 +215,6 @@ contract NeloverseDAO is ReentrancyGuard {
         prop.targetAddress = _targetAddress;
         emit SubmitProposal(msg.sender, acceptanceThreshold, _days, details, flags, proposalCount, _proposalType);
         proposalCount += 1;
-    }
-
-    /// @notice Function cancel proposal if it has not been cancelled already.
-    function _cancelProposal(uint256 proposalId) internal {
-        proposals[proposalId].flags[3] = true; // cancelled
-        emit CancelProposal(proposalId, msg.sender);
     }
 
     /// @notice submit vote for proposal.
@@ -348,12 +332,12 @@ contract NeloverseDAO is ReentrancyGuard {
 
         if (!hasVotingPeriodExpired(proposal.startingTime, proposal.endingTime) && getCurrentTime() >= proposal.startingTime) {
             _stateStatus = ProposalState.Active;
-        } else if (hasVotingPeriodExpired(proposal.startingTime, proposal.endingTime) && proposal.flags[3] == true) {
-            _stateStatus = ProposalState.Canceled;
         } else if (hasVotingPeriodExpired(proposal.startingTime, proposal.endingTime) && proposal.flags[2] == true) {
             _stateStatus = ProposalState.Passed;
         } else if (hasVotingPeriodExpired(proposal.startingTime, proposal.endingTime) && proposal.flags[2] == false) {
             _stateStatus = ProposalState.Rejected;
+        } else if (hasVotingPeriodExpired(proposal.startingTime, proposal.endingTime) && proposal.enacted == true) {
+            _stateStatus = ProposalState.Enacted;
         } else if (hasVotingPeriodExpired(proposal.startingTime, proposal.endingTime)) {
             _stateStatus = ProposalState.Finished;
         }
