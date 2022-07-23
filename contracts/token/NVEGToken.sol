@@ -23,18 +23,17 @@ contract NVEGToken is ERC20BurnPausable, AccessController, ReentrancyGuard {
         address _timelockContract
     ) ERC20("Neloverse Governance", "NVEG") {
         _setupRole(ADMIN, _msgSender());
-        _lastUnlockedTime = block.timestamp;
         timelockContract = _timelockContract;
         _mint(_timelockContract, initializeSupply);
         _mint(_neloverseGovernorAddress, initializeTokenAmount);
     }
 
-    modifier onlyNeloverseDAO(uint256 proposalId, uint256 _proposalType) {
+    modifier onlyNeloverseDAO(uint256 proposalId) {
         require(daoContract != address(0), "NVEG: DAO address can not be 0.");
         require(INeloverseDAO(daoContract).checkProposalId(proposalId), "NVEG: Proposal ID is not valid.");
-        require(INeloverseDAO(daoContract).getProposalFlags(proposalId, _proposalType)[1] == true && INeloverseDAO(daoContract).getProposalFlags(proposalId, _proposalType)[2] == true, "NVEG: You not allow to do this function.");
+        require(INeloverseDAO(daoContract).getProposalFlags(proposalId)[1] == true && INeloverseDAO(daoContract).getProposalFlags(proposalId)[2] == true, "NVEG: You not allow to do this function.");
         require(INeloverseDAO(daoContract).getProposalTargetAddress(proposalId) == address(this), "NVEG: The target address is not valid.");
-        require(INeloverseDAO(daoContract).getActionProposalStatus(proposalId, _proposalType) == false, "NVE: This governance proposal already did.");
+        require(INeloverseDAO(daoContract).getActionProposalStatus(proposalId) == false, "NVE: This governance proposal already did.");
         _;
     }
 
@@ -46,13 +45,12 @@ contract NVEGToken is ERC20BurnPausable, AccessController, ReentrancyGuard {
         address receiver,
         uint256 amount,
         uint256 proposalId,
-        uint256 _lockId,
-        uint256 _proposalType
-    ) public onlyNeloverseDAO(proposalId, _proposalType) {
+        uint256 _lockId
+    ) public onlyNeloverseDAO(proposalId) {
         require(getBalanceTimelock(_lockId) >= amount && getBalanceTimelock(_lockId) > 0, "NVEG: Not enough token to mint");
         require(amount > 0, "NVEG: Amount of token mint must more than zero");
 
-        INeloverseDAO(daoContract).actionProposal(proposalId, _proposalType);
+        INeloverseDAO(daoContract).actionProposal(proposalId);
         ITimelock(timelockContract).withdraw(_lockId, amount, receiver);
     }
 
@@ -60,9 +58,8 @@ contract NVEGToken is ERC20BurnPausable, AccessController, ReentrancyGuard {
         address[] memory poolList,
         uint256[] memory ratio,
         uint256 proposalId,
-        uint256 _proposalType,
         uint256 _lockId
-    ) external nonReentrant onlyNeloverseDAO(proposalId, _proposalType) {
+    ) external nonReentrant onlyNeloverseDAO(proposalId) {
         require(_lastUnlockedTime + minimumTimeBetweenUnlocks < block.timestamp, "NVEG: 1 month should pass");
         require(poolList.length == ratio.length && poolList.length > 0, "NVEG: Invalid pool setting input");
 
@@ -74,18 +71,18 @@ contract NVEGToken is ERC20BurnPausable, AccessController, ReentrancyGuard {
             ITimelock(timelockContract).withdraw(_lockId, amountTransfer, poolList[i]);
         }
 
-        INeloverseDAO(daoContract).actionProposal(proposalId, _proposalType);
+        INeloverseDAO(daoContract).actionProposal(proposalId);
         _lastUnlockedTime = block.timestamp;
     }
 
   //pause when token has problem
-    function pause(uint256 proposalId, uint256 _proposalType) external onlyNeloverseDAO(proposalId, _proposalType) {
-        INeloverseDAO(daoContract).actionProposal(proposalId, _proposalType);
+    function pause(uint256 proposalId) external onlyNeloverseDAO(proposalId) {
+        INeloverseDAO(daoContract).actionProposal(proposalId);
         _pause();
     }
 
-    function unPause(uint256 proposalId, uint256 _proposalType) external onlyNeloverseDAO(proposalId, _proposalType) {
-        INeloverseDAO(daoContract).actionProposal(proposalId, _proposalType);
+    function unPause(uint256 proposalId) external onlyNeloverseDAO(proposalId) {
+        INeloverseDAO(daoContract).actionProposal(proposalId);
         _unpause();
     }
 

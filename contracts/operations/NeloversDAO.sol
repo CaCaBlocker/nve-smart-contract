@@ -22,7 +22,7 @@ contract NeloverseDAO is ReentrancyGuard {
 
     /// @notice EVENTS
     event SubmitProposal(address proposer, uint256 acceptanceThreshold, uint256 _days, string details, bool[4] flags, uint256 proposalId, uint256 proposalType);
-    event SubmitVote(uint256 indexed proposalIndex, address indexed memberAddress, uint8 uintVote);
+    event SubmitVote(uint256 indexed proposalIndex, address indexed memberAddress, uint8 uintVote, uint256 votedScore);
     event ProcessedProposal(address proposer, uint256 acceptanceThreshold, uint256 _days, string details, bool[4] flags, uint256 proposalId);
     event AddMember(uint256 shares, uint256 memberId, address memberAddress);
     event Withdraw(address memberAddress, uint256 shares);
@@ -114,6 +114,7 @@ contract NeloverseDAO is ReentrancyGuard {
         bool[4] memory flags; /// @notice [sponsored, processed, didPass, cancelled]
         if (_proposalType == 1) {
             require(_targetAddress != address(0), "NeloverseDAO: Target Address cannot be 0.");
+            require(IERC20(nvegContract).balanceOf(msg.sender) >= 100*10**9, "NeloverseDAO: You need at least 100 NVEG to submit Governance proposal.");
         }
 
         _submitProposal(acceptanceThreshold, _days, details, flags, _proposalType, _targetAddress);
@@ -255,7 +256,7 @@ contract NeloverseDAO is ReentrancyGuard {
         }
 
         prop.votesByMember[msg.sender] = vote;
-        emit SubmitVote(proposalId, msg.sender, uintVote);
+        emit SubmitVote(proposalId, msg.sender, uintVote, member.votedScore[proposalId]);
     }
 
     function getMemberProposalVote(uint256 proposalId) public view returns (Vote) {
@@ -274,8 +275,8 @@ contract NeloverseDAO is ReentrancyGuard {
         return proposalQueue.length;
     }
 
-    function getMember() public view returns (uint256, uint256[] memory, bool) {
-        return (members[msg.sender].shares, members[msg.sender].votedProposal, members[msg.sender].exists);
+    function getMember(address _owner) public view returns (uint256, uint256[] memory, bool) {
+        return (members[_owner].shares, members[_owner].votedProposal, members[_owner].exists);
     }
 
     function getProposalFlags(uint256 proposalId) public onlyValid(proposalId) view returns (bool[4] memory _flags) {

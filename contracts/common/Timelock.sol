@@ -11,14 +11,16 @@ contract Timelock is ReentrancyGuard {
     /// @notice GLOBAL CONSTANTS
     uint256 private depositId;
     uint256[] private allDepositIds;
-    uint public constant MINIMUM_DELAY = 7;
+    uint public constant MINIMUM_DELAY = 3;
     uint public constant MAXIMUM_DELAY = 30;
 
     mapping(uint256 => Items) private lockedToken;
+    mapping(address => TokenLocked) private lockedQueue;
     mapping(address => mapping(uint256 => uint256)) private walletTokenBalance;
 
     /// @notice EVENTS
     event Deposit(address indexed tokenAddress, address indexed sender, uint256 amount, uint256 unlockTime, uint256 depositId);
+    event DepositMore(address indexed tokenAddress, address indexed sender, uint256 amount, uint256 unlockTime);
     event Withdraw(address indexed tokenAddress, address indexed receiver, uint256 amount);
 
     /// @notice MODIFIER
@@ -38,6 +40,11 @@ contract Timelock is ReentrancyGuard {
         bool exists;
     }
 
+    struct TokenLocked {
+        uint256 id;
+        bool exists;
+    }
+
     /// @notice TIMELOCK FUNCTIONS
     /// @notice deposit function
     function deposit(
@@ -45,29 +52,46 @@ contract Timelock is ReentrancyGuard {
         address _owner,
         uint256 _amount,
         uint256 _unlockTime
-    ) external nonReentrant returns (uint256 _id) {
+    ) external nonReentrant returns (uint256) {
         require(_amount > 0, "Timelock: Tokens amount must be greater than 0.");
         require(_unlockTime >= MINIMUM_DELAY, "Timelock: Unlock time must exceed minimum delay.");
         require(_unlockTime <= MAXIMUM_DELAY, "Timelock: Unlock time must not exceed maximum delay.");
         require(IERC20(_tokenAddress).balanceOf(address(this)) > 0, "Timelock: Don't have tokens to lock.");
-
         uint256 lockAmount = _amount;
-        _id = ++depositId;
 
-        lockedToken[_id].tokenAddress = _tokenAddress;
-        lockedToken[_id].tokenAmount = lockAmount;
-        lockedToken[_id].unlockTime = endDate(_unlockTime);
-        lockedToken[_id].owner = _owner;
-        lockedToken[_id].withdrawn = false;
-        lockedToken[_id].exists = true;
+        if (lockedQueue[_tokenAddress].exists) {
+            uint256 _lockedId = lockedQueue[_tokenAddress].id;
+            uint256 _predictAmount = lockedToken[_lockedId].tokenAmount + lockAmount;
+            require(lockedToken[_lockedId].owner == msg.sender, "Timelock: You are not the owner.");
+            require(IERC20(_tokenAddress).balanceOf(address(this)) >= _predictAmount, "Timelock: Don't have tokens to lock.");
 
-        allDepositIds.push(_id);
-        walletTokenBalance[_tokenAddress][_id] = walletTokenBalance[_tokenAddress][_id].add(_amount);
+            lockedToken[_lockedId].tokenAmount = _predictAmount;
+            lockedToken[_lockedId].unlockTime = endDate(_unlockTime);
+            walletTokenBalance[_tokenAddress][_lockedId] = walletTokenBalance[_tokenAddress][_lockedId].add(_amount);
 
-        emit Deposit(_tokenAddress, msg.sender, _amount, _unlockTime, depositId);
+            emit DepositMore(_tokenAddress, msg.sender, _amount, _unlockTime);
+            return _lockedId;
+        } else {
+            uint256 _id = ++depositId;
+
+            lockedToken[_id].tokenAddress = _tokenAddress;
+            lockedToken[_id].tokenAmount = lockAmount;
+            lockedToken[_id].unlockTime = endDate(_unlockTime);
+            lockedToken[_id].owner = _owner;
+            lockedToken[_id].withdrawn = false;
+            lockedToken[_id].exists = true;
+
+            lockedQueue[_tokenAddress].id = _id;
+            lockedQueue[_tokenAddress].exists = true;
+
+            allDepositIds.push(_id);
+            walletTokenBalance[_tokenAddress][_id] = walletTokenBalance[_tokenAddress][_id].add(_amount);
+            emit Deposit(_tokenAddress, msg.sender, _amount, _unlockTime, depositId);
+            return _id;
+        }
     }
 
-    /// @notice withdraw function
+    /// @notice withdraw functions
     function withdraw(
         uint256 _id,
         uint256 _amount,
@@ -85,7 +109,9 @@ contract Timelock is ReentrancyGuard {
         require(IERC20(tokenAddress).transfer(_withdrawalAddress, _amount), "Timelock: Failed to transfer tokens.");
 
         if (lockedToken[_id].tokenAmount <= 0) {
+            lockedToken[_id].exists = false;
             lockedToken[_id].withdrawn = true;
+            lockedQueue[tokenAddress].exists = false;
         }
 
         uint256 previousBalance = walletTokenBalance[tokenAddress][_id];
@@ -99,8 +125,21 @@ contract Timelock is ReentrancyGuard {
         return walletTokenBalance[_tokenAddress][_id];
     }
 
-    function getDepositDetails(uint256 _id) view public returns (address, uint256, uint256, bool) {
-        return (lockedToken[_id].tokenAddress, lockedToken[_id].tokenAmount, lockedToken[_id].unlockTime, lockedToken[_id].withdrawn);
+    function getDepositDetails(uint256 _id) view public returns (address, address, uint256, uint256, bool) {
+        return (
+            lockedToken[_id].tokenAddress,
+            lockedToken[_id].owner,
+            lockedToken[_id].tokenAmount,
+            lockedToken[_id].unlockTime,
+            lockedToken[_id].withdrawn
+        );
+    }
+
+    function getLockedItem(address _address) view public returns (uint256, bool) {
+        return (
+            lockedQueue[_address].id,
+            lockedQueue[_address].exists
+        );
     }
 
     /// @notice HELPER FUNCTIONS
