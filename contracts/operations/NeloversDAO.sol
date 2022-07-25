@@ -83,6 +83,7 @@ contract NeloverseDAO is ReentrancyGuard {
 
     modifier onlyValid(uint256 proposalId) {
         require(proposalCount >= proposalId && proposalId > 0, "NeloverseDAO: Invalid proposal id.");
+        require(proposals[proposalId].exists, "NeloverseDAO: This proposal does not exist.");
         _;
     }
 
@@ -123,10 +124,9 @@ contract NeloverseDAO is ReentrancyGuard {
 
     /// @notice Function which can be called when the proposal voting time has expired. To either act on the proposal or cancel if not a majority yes vote.
     function processProposal(uint256 proposalId) external onlyValid(proposalId) returns (bool) {
-        require(proposals[proposalId].exists, "NeloverseDAO: This proposal does not exist.");
         require(proposals[proposalId].flags[1] == false, "NeloverseDAO: This proposal has already been processed.");
         require(getCurrentTime() >= proposals[proposalId].startingTime, "NeloverseDAO: Voting period has not started.");
-        require(hasVotingPeriodExpired(proposals[proposalId].startingTime, proposals[proposalId].endingTime), "NeloverseDAO: Proposal voting period has not expired yet.");
+        require(hasVotingPeriodExpired(proposals[proposalId].endingTime), "NeloverseDAO: Proposal voting period has not expired yet.");
         for (uint256 i = 0; i < proposalQueue.length; i++) {
             if (proposalQueue[i] == proposalId) {
                 delete proposalQueue[i];
@@ -156,7 +156,6 @@ contract NeloverseDAO is ReentrancyGuard {
 
     /// @notice Function to update the action status of proposal, it have been done or not.
     function actionProposal(uint256 proposalId) external onlyValid(proposalId) {
-        require(proposals[proposalId].exists, "NeloverseDAO: This proposal does not exist.");
         require(proposals[proposalId].flags[1] == true && proposals[proposalId].flags[2] == true, "NeloverseDAO: This proposal not approve.");
         require(proposals[proposalId].enacted == false, "NeloverseDAO: This proposal already did.");
         proposals[proposalId].enacted = true;
@@ -185,7 +184,7 @@ contract NeloverseDAO is ReentrancyGuard {
             for (uint256 i = 0; i < member.votedProposal.length; i++) {
                 Proposal storage proposal = proposals[member.votedProposal[i]];
                 if (proposal.flags[3] == false) {
-                    require(hasVotingPeriodExpired(proposal.startingTime, proposal.endingTime), "NeloverseDAO: Proposal you voted not expired.");
+                    require(hasVotingPeriodExpired(proposal.endingTime), "NeloverseDAO: Proposal you voted not expired.");
                 }
             }
         }
@@ -220,7 +219,6 @@ contract NeloverseDAO is ReentrancyGuard {
 
     /// @notice submit vote for proposal.
     function _submitVote(uint256 proposalId, uint8 uintVote) internal {
-        require(proposals[proposalId].exists, "NeloverseDAO: This proposal does not exist.");
         Vote vote = Vote(uintVote);
         Proposal storage prop = proposals[proposalId];
         Member storage member = members[msg.sender];
@@ -232,7 +230,7 @@ contract NeloverseDAO is ReentrancyGuard {
         }
 
         require(_state(proposalId) == ProposalState.Active, "NeloverseDAO: Proposal voting period has not started.");
-        require(!hasVotingPeriodExpired(prop.startingTime, prop.endingTime), "NeloverseDAO: Proposal voting period has expired.");
+        require(!hasVotingPeriodExpired(prop.endingTime), "NeloverseDAO: Proposal voting period has expired.");
         require(vote == Vote.Yes || vote == Vote.No, "NeloverseDAO: Vote must be either Yes or No.");
 
         if (vote == Vote.Yes) {
@@ -280,7 +278,6 @@ contract NeloverseDAO is ReentrancyGuard {
     }
 
     function getProposalFlags(uint256 proposalId) public onlyValid(proposalId) view returns (bool[4] memory _flags) {
-        require(proposals[proposalId].exists, "NeloverseDAO: This proposal does not exist.");
         _flags = proposals[proposalId].flags;
 
         return _flags;
@@ -291,7 +288,7 @@ contract NeloverseDAO is ReentrancyGuard {
     }
 
     function checkProposalId(uint256 proposalId) public view returns (bool) {
-        return proposalCount >= proposalId && proposalId > 0;
+        return proposalCount >= proposalId && proposalId > 0 && proposals[proposalId].exists;
     }
 
     function getProposalTargetAddress(uint256 proposalId) public view returns (address) {
@@ -302,14 +299,12 @@ contract NeloverseDAO is ReentrancyGuard {
     }
 
     function getActionProposalStatus(uint256 proposalId) public onlyValid(proposalId) view returns (bool) {
-        require(proposals[proposalId].exists, "NeloverseDAO: This proposal does not exist.");
         bool enacted = proposals[proposalId].enacted;
 
         return enacted;
     }
 
     function getProposalDetail(uint256 proposalId) public onlyValid(proposalId) view returns(uint256, uint256, uint256, uint256, uint256, uint256, uint256, string memory, bool, uint256) {
-        require(proposals[proposalId].exists, "NeloverseDAO: This proposal does not exist.");
         Proposal storage prop = proposals[proposalId];
         return (prop.startingTime, prop.endingTime, prop.yesVotes, prop.noVotes, prop.acceptanceThreshold, prop.votingYesScore, prop.votingNoScore, prop.details, prop.enacted, prop.proposalType);
     }
@@ -323,23 +318,23 @@ contract NeloverseDAO is ReentrancyGuard {
        return valueWei/(10**9);
     }
 
-    function hasVotingPeriodExpired(uint256 startingTime, uint256 endingTime) public view returns (bool) {
-        return (getCurrentTime() >= (startingTime + endingTime));
+    function hasVotingPeriodExpired(uint256 endingTime) public view returns (bool) {
+        return (getCurrentTime() >= endingTime);
     }
 
     function _state(uint256 proposalId) internal view returns (ProposalState _stateStatus) {
         require(proposals[proposalId].exists, "NeloverseDAO: This proposal does not exist.");
         Proposal storage proposal = proposals[proposalId];
 
-        if (!hasVotingPeriodExpired(proposal.startingTime, proposal.endingTime) && getCurrentTime() >= proposal.startingTime) {
+        if (!hasVotingPeriodExpired(proposal.endingTime) && getCurrentTime() >= proposal.startingTime) {
             _stateStatus = ProposalState.Active;
-        } else if (hasVotingPeriodExpired(proposal.startingTime, proposal.endingTime) && proposal.flags[2] == true) {
+        } else if (hasVotingPeriodExpired(proposal.endingTime) && proposal.flags[2] == true) {
             _stateStatus = ProposalState.Passed;
-        } else if (hasVotingPeriodExpired(proposal.startingTime, proposal.endingTime) && proposal.flags[2] == false) {
+        } else if (hasVotingPeriodExpired(proposal.endingTime) && proposal.flags[2] == false) {
             _stateStatus = ProposalState.Rejected;
-        } else if (hasVotingPeriodExpired(proposal.startingTime, proposal.endingTime) && proposal.enacted == true) {
+        } else if (hasVotingPeriodExpired(proposal.endingTime) && proposal.enacted == true) {
             _stateStatus = ProposalState.Enacted;
-        } else if (hasVotingPeriodExpired(proposal.startingTime, proposal.endingTime)) {
+        } else if (hasVotingPeriodExpired(proposal.endingTime)) {
             _stateStatus = ProposalState.Finished;
         }
     }
