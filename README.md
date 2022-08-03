@@ -1,15 +1,10 @@
-# Basic Sample Hardhat Project
+# Neloverse Smart Contract
 
-This project demonstrates a basic Hardhat use case. It comes with a sample contract, a test for that contract, a sample script that deploys that contract, and an example of a task implementation, which simply lists the available accounts.
+In Neloverse tokenomics, there are 4 main contracts which are NVE (Game token) , NVEG (Governance Token), Timelock (NVE and NVEG minted supply are locked here) and DAO (Governance and Community Proposal are raise and get vote by NVEG holders ).
 
-Try running some of the following tasks:
+## Contract Address
 
-```shell
-npx hardhat accounts
-npx hardhat compile
-npx hardhat clean
-npx hardhat test
-npx hardhat node
-node scripts/sample-script.js
-npx hardhat help
-```
+- NVE: 0x4Ef420Cd10d732Dfdcd85a11a065a9c17961c5Ec
+- NVEG: 0x92916c1B82e3D959e16f427F22B902c701664D08
+- Neloverse DAO: 0x583699e4F5b47968f63b77C614fb3Cda8b1Fb973
+- Timelock: 0xCB90844005633B8758778f6d85c862Bb16eE2b7b
